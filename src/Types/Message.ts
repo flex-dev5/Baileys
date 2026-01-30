@@ -215,6 +215,78 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 	productImage: WAMediaUpload
 }
 
+export type ButtonsMessageContent = ({
+	buttons: proto.Message.ButtonsMessage.IButton[]
+	text?: string
+	caption?: string
+	footer?: string
+	title?: string
+	headerType?: proto.Message.ButtonsMessage.HeaderType
+	image?: WAMediaUpload
+	video?: WAMediaUpload
+	document?: WAMediaUpload
+	mimetype?: string
+	fileName?: string
+	jpegThumbnail?: string
+	gifPlayback?: boolean
+	ptv?: boolean
+	width?: number
+	height?: number
+} & Mentionable &
+	Contextable &
+	Editable)
+
+export type ListMessageContent = ({
+	sections: proto.Message.ListMessage.ISection[]
+	buttonText: string
+	title?: string
+	footer?: string
+	description?: string
+} & Mentionable &
+	Contextable &
+	Editable)
+
+export type TemplateMessageContent = ({
+	templateButtons: proto.IHydratedTemplateButton[]
+	text?: string
+	caption?: string
+	footer?: string
+	title?: string
+	image?: WAMediaUpload
+	video?: WAMediaUpload
+	document?: WAMediaUpload
+	mimetype?: string
+	fileName?: string
+	jpegThumbnail?: string
+	gifPlayback?: boolean
+	ptv?: boolean
+	width?: number
+	height?: number
+} & Mentionable &
+	Contextable &
+	Editable)
+
+export type InteractiveMessageContent = ({
+	interactiveButtons?: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton[]
+	nativeFlowMessage?: proto.Message.InteractiveMessage.INativeFlowMessage
+	text?: string
+	caption?: string
+	footer?: string
+	title?: string
+	image?: WAMediaUpload
+	video?: WAMediaUpload
+	document?: WAMediaUpload
+	mimetype?: string
+	fileName?: string
+	jpegThumbnail?: string
+	gifPlayback?: boolean
+	ptv?: boolean
+	width?: number
+	height?: number
+} & Mentionable &
+	Contextable &
+	Editable)
+
 export type AnyRegularMessageContent = (
 	| ({
 			text: string
@@ -249,6 +321,10 @@ export type AnyRegularMessageContent = (
 	| {
 			listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
 	  }
+	| ButtonsMessageContent
+	| ListMessageContent
+	| TemplateMessageContent
+	| InteractiveMessageContent
 	| {
 			pin: WAMessageKey
 			type: proto.PinInChat.Type

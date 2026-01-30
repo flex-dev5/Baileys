@@ -396,7 +396,90 @@ export const generateWAMessageContent = async (
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
-	if (hasNonNullishProperty(message, 'text')) {
+	const hasMediaAttachment =
+		hasOptionalProperty(message, 'image') || hasOptionalProperty(message, 'video') || hasOptionalProperty(message, 'document')
+	const prepareMediaMessage = async () => {
+		if (!hasMediaAttachment) {
+			return undefined
+		}
+
+		return prepareWAMessageMedia(message as AnyMediaMessageContent, options)
+	}
+
+	if (hasNonNullishProperty(message, 'buttons')) {
+		const mediaMessage = await prepareMediaMessage()
+		const headerType =
+			message.headerType ??
+			(mediaMessage?.imageMessage
+				? proto.Message.ButtonsMessage.HeaderType.IMAGE
+				: mediaMessage?.videoMessage
+					? proto.Message.ButtonsMessage.HeaderType.VIDEO
+					: mediaMessage?.documentMessage
+						? proto.Message.ButtonsMessage.HeaderType.DOCUMENT
+						: message.title
+							? proto.Message.ButtonsMessage.HeaderType.TEXT
+							: proto.Message.ButtonsMessage.HeaderType.EMPTY)
+
+		m.buttonsMessage = {
+			contentText: message.text || message.caption,
+			footerText: message.footer,
+			headerType,
+			text: message.title,
+			buttons: message.buttons.map(button => ({
+				...button,
+				type: button.type ?? proto.Message.ButtonsMessage.Button.Type.RESPONSE
+			})),
+			imageMessage: mediaMessage?.imageMessage,
+			videoMessage: mediaMessage?.videoMessage,
+			documentMessage: mediaMessage?.documentMessage
+		}
+	} else if (hasNonNullishProperty(message, 'sections')) {
+		m.listMessage = {
+			title: message.title,
+			description: message.description,
+			buttonText: message.buttonText,
+			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
+			sections: message.sections,
+			footerText: message.footer
+		}
+	} else if (hasNonNullishProperty(message, 'templateButtons')) {
+		const mediaMessage = await prepareMediaMessage()
+		m.templateMessage = {
+			hydratedTemplate: {
+				hydratedContentText: message.text || message.caption,
+				hydratedFooterText: message.footer,
+				hydratedTitleText: message.title,
+				hydratedButtons: message.templateButtons,
+				imageMessage: mediaMessage?.imageMessage,
+				videoMessage: mediaMessage?.videoMessage,
+				documentMessage: mediaMessage?.documentMessage
+			}
+		}
+	} else if (hasNonNullishProperty(message, 'interactiveButtons') || hasNonNullishProperty(message, 'nativeFlowMessage')) {
+		const mediaMessage = await prepareMediaMessage()
+		const header =
+			message.title || mediaMessage
+				? {
+						title: message.title,
+						hasMediaAttachment: !!mediaMessage,
+						imageMessage: mediaMessage?.imageMessage,
+						videoMessage: mediaMessage?.videoMessage,
+						documentMessage: mediaMessage?.documentMessage
+				  }
+				: undefined
+		const bodyText = message.text || message.caption
+		const nativeFlowMessage = {
+			...message.nativeFlowMessage,
+			buttons: message.nativeFlowMessage?.buttons ?? message.interactiveButtons
+		}
+
+		m.interactiveMessage = {
+			header,
+			body: bodyText ? { text: bodyText } : undefined,
+			footer: message.footer ? { text: message.footer } : undefined,
+			nativeFlowMessage
+		}
+	} else if (hasNonNullishProperty(message, 'text')) {
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = message.linkPreview
