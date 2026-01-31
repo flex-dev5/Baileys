@@ -42,7 +42,7 @@ import {
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
 
-type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, any> ? T : never
+type ExtractByKey<T, K extends PropertyKey> = T extends { [P in K]?: unknown } ? T : never
 type RequireKey<T, K extends keyof T> = T & {
 	[P in K]-?: Exclude<T[P], null | undefined>
 }
@@ -391,6 +391,13 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 	return typeof obj === 'object' && obj !== null && key in obj && (obj as any)[key] !== null
 }
 
+const isAnyMediaMessageContent = (message: AnyMessageContent): message is AnyMediaMessageContent =>
+	hasOptionalProperty(message, 'image') ||
+	hasOptionalProperty(message, 'video') ||
+	hasOptionalProperty(message, 'audio') ||
+	hasOptionalProperty(message, 'document') ||
+	hasOptionalProperty(message, 'sticker')
+
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
 	options: MessageContentGenerationOptions
@@ -596,6 +603,10 @@ export const generateWAMessageContent = async (
 				break
 		}
 	} else if (hasOptionalProperty(message, 'ptv') && message.ptv) {
+		if (!message.video) {
+			throw new Boom('PTV messages require a video upload', { statusCode: 400 })
+		}
+
 		const { videoMessage } = await prepareWAMessageMedia({ video: message.video }, options)
 		m.ptvMessage = videoMessage
 	} else if (hasNonNullishProperty(message, 'product')) {
@@ -684,8 +695,10 @@ export const generateWAMessageContent = async (
 				initiatedByMe: true
 			}
 		}
-	} else {
+	} else if (isAnyMediaMessageContent(message)) {
 		m = await prepareWAMessageMedia(message, options)
+	} else {
+		throw new Boom('Invalid message content', { statusCode: 400 })
 	}
 
 	if (hasOptionalProperty(message, 'viewOnce') && !!message.viewOnce) {
