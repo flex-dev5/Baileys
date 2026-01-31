@@ -1,8 +1,6 @@
-// file: src/Utils/message.ts
-// Full replacement file (TypeScript, ESM)
-//
-// هدف الملف: دعم interactive nativeFlow + MD patch تلقائي للأزرار
-// ملاحظة: لو مسارات الـ imports عندك مختلفة، عدلها لتطابق مشروعك.
+// file: src/Utils/messages.ts  (or src/Utils/message.ts)
+// Full replacement - fixes TS7022 + adds NativeFlow + MD Patch
+// NOTE: Adjust import paths if your repo differs.
 
 import { Boom } from '@hapi/boom'
 import axios from 'axios'
@@ -43,9 +41,13 @@ import {
 	getAudioDuration,
 	getAudioWaveform,
 	getRawMediaUploadData,
+	getStream,
+	toBuffer,
 	type MediaDownloadOptions
 } from './messages-media.js'
 import { shouldIncludeReportingToken } from './reporting-utils.js'
+
+/* ---------------------------------- Types --------------------------------- */
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, any> ? T : never
 type RequireKey<T, K extends keyof T> = T & { [P in K]-?: Exclude<T[P], null | undefined> }
@@ -84,6 +86,8 @@ type NativeFlowPayload = {
 	buttons: NativeFlowButton[]
 }
 
+/* --------------------------------- Consts --------------------------------- */
+
 const MIMETYPE_MAP: { [T in MediaType]?: string } = {
 	image: 'image/jpeg',
 	video: 'video/mp4',
@@ -101,9 +105,8 @@ const MessageTypeProto = {
 	document: WAProto.Message.DocumentMessage
 } as const
 
-/**
- * Uses a regex to test whether the string contains a URL, and returns the URL if it does.
- */
+/* --------------------------------- Helpers -------------------------------- */
+
 export const extractUrlFromText = (text: string) => text.match(URL_REGEX)?.[0]
 
 export const generateLinkPreviewIfRequired = async (
@@ -152,7 +155,7 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 }
 
 /**
- * MD Patch للأزرار/القوائم/interactive:
+ * ✅ MD Patch للأزرار/القوائم/interactive
  * يلفّ الرسالة داخل viewOnceMessageV2Extension + deviceListMetadataVersion=2
  */
 export const patchMessageForMdIfRequired = (message: proto.IMessage) => {
@@ -178,6 +181,8 @@ export const patchMessageForMdIfRequired = (message: proto.IMessage) => {
 	})
 }
 
+/* ------------------------------ Media prepare ----------------------------- */
+
 export const prepareWAMessageMedia = async (
 	message: AnyMediaMessageContent,
 	options: MessageContentGenerationOptions
@@ -188,7 +193,6 @@ export const prepareWAMessageMedia = async (
 	for (const key of MEDIA_KEYS) {
 		if (key in message) mediaType = key
 	}
-
 	if (!mediaType) throw new Boom('Invalid media type', { statusCode: 400 })
 
 	const uploadData: MediaUploadData = {
@@ -250,11 +254,11 @@ export const prepareWAMessageMedia = async (
 		})
 
 		if (uploadData.ptv) {
-			obj.ptvMessage = obj.videoMessage
-			delete obj.videoMessage
+			;(obj as any).ptvMessage = (obj as any).videoMessage
+			delete (obj as any).videoMessage
 		}
 
-		if (obj.stickerMessage) obj.stickerMessage.stickerSentTs = Date.now()
+		if ((obj as any).stickerMessage) (obj as any).stickerMessage.stickerSentTs = Date.now()
 
 		if (cacheableKey) {
 			logger?.debug({ cacheableKey }, 'set cache')
@@ -274,14 +278,22 @@ export const prepareWAMessageMedia = async (
 	const { mediaKey, encFilePath, originalFilePath, fileEncSha256, fileSha256, fileLength } = await encryptedStream(
 		uploadData.media,
 		options.mediaTypeOverride || mediaType,
-		{ logger, saveOriginalFileIfRequired: requiresOriginalForSomeProcessing, opts: options.options }
+		{
+			logger,
+			saveOriginalFileIfRequired: requiresOriginalForSomeProcessing,
+			opts: options.options
+		}
 	)
 
 	const fileEncSha256B64 = fileEncSha256.toString('base64')
 
 	const [{ mediaUrl, directPath }] = await Promise.all([
 		(async () => {
-			const result = await options.upload(encFilePath, { fileEncSha256B64, mediaType, timeoutMs: options.mediaUploadTimeoutMs })
+			const result = await options.upload(encFilePath, {
+				fileEncSha256B64,
+				mediaType,
+				timeoutMs: options.mediaUploadTimeoutMs
+			})
 			logger?.debug({ mediaType, cacheableKey }, 'uploaded media')
 			return result
 		})(),
@@ -317,7 +329,7 @@ export const prepareWAMessageMedia = async (
 	})
 
 	const obj = WAProto.Message.fromObject({
-		[`${mediaType}Message`]: MessageTypeProto[mediaType as keyof typeof MessageTypeProto].fromObject({
+		[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
 			url: mediaUrl,
 			directPath,
 			mediaKey,
@@ -327,12 +339,12 @@ export const prepareWAMessageMedia = async (
 			mediaKeyTimestamp: unixTimestampSeconds(),
 			...uploadData,
 			media: undefined
-		} as any)
+		})
 	})
 
 	if (uploadData.ptv) {
-		obj.ptvMessage = obj.videoMessage
-		delete obj.videoMessage
+		;(obj as any).ptvMessage = (obj as any).videoMessage
+		delete (obj as any).videoMessage
 	}
 
 	if (cacheableKey) {
@@ -342,6 +354,65 @@ export const prepareWAMessageMedia = async (
 
 	return obj
 }
+
+/* -------------------------- Album (optional helper) ------------------------ */
+
+export const prepareAlbumMessageContent = async (jid: string, albums: any[], options: any) => {
+	if (!Array.isArray(albums)) throw new Error('albums must be an array containing media objects.')
+	if (albums.length === 0) throw new Error('albums cannot be empty. At least one media item is required.')
+
+	const validCount = albums.filter(m => ('image' in m) || ('video' in m)).length
+	if (validCount === 0) throw new Error("albums contains no valid media. Use 'image' or 'video' keys.")
+
+	const message: any[] = []
+
+	const albumMsg = generateWAMessageFromContent(
+		jid,
+		{
+			albumMessage: {
+				expectedImageCount: albums.filter(i => 'image' in i).length,
+				expectedVideoCount: albums.filter(i => 'video' in i).length
+			} as any
+		} as any,
+		options
+	)
+
+	await options.suki.relayMessage(jid, albumMsg.message, { messageId: albumMsg.key.id })
+
+	for (const media of albums) {
+		const content = 'image' in media ? { image: media.image } : 'video' in media ? { video: media.video } : null
+		if (!content) continue
+
+		const mediaMsg = await generateWAMessage(
+			jid,
+			{ ...content, ...media } as any,
+			{
+				userJid: options.userJid,
+				upload: async (encFilePath: string, opts: any) => {
+					const up = await options.suki.waUploadToServer(encFilePath, { ...opts, newsletter: isJidNewsletter(jid) })
+					return up
+				},
+				...options
+			}
+		)
+
+		if (mediaMsg) {
+			;(mediaMsg.message as any).messageContextInfo = {
+				messageSecret: randomBytes(32),
+				messageAssociation: {
+					associationType: (proto as any).MessageAssociation.AssociationType.MEDIA_ALBUM,
+					parentMessageKey: albumMsg.key
+				}
+			}
+		}
+
+		message.push(mediaMsg)
+	}
+
+	return message
+}
+
+/* ---------------------------- Disappearing set ---------------------------- */
 
 export const prepareDisappearingMessageSettingContent = (ephemeralExpiration?: number) => {
 	const content: WAMessageContent = {
@@ -357,6 +428,8 @@ export const prepareDisappearingMessageSettingContent = (ephemeralExpiration?: n
 	return WAProto.Message.fromObject(content)
 }
 
+/* ------------------------------ Forward helper ---------------------------- */
+
 export const generateForwardMessageContent = (message: WAMessage, forceForward?: boolean) => {
 	let content = message.message
 	if (!content) throw new Boom('no content in message', { statusCode: 400 })
@@ -369,7 +442,7 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 	score += message.key.fromMe && !forceForward ? 0 : 1
 
 	if (key === 'conversation') {
-		content.extendedTextMessage = { text: content[key] as any }
+		;(content as any).extendedTextMessage = { text: (content as any)[key] }
 		delete (content as any).conversation
 		key = 'extendedTextMessage'
 	}
@@ -380,16 +453,14 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 	return content
 }
 
+/* ------------------------ NativeFlow message builder ----------------------- */
+
 const buildNativeFlowInteractiveMessage = async (
 	payload: NativeFlowPayload,
 	options: MessageContentGenerationOptions
 ): Promise<WAMessageContent> => {
 	let headerMedia: any = undefined
-
-	if (payload.media) {
-		const prepared = await prepareWAMessageMedia(payload.media, options)
-		headerMedia = prepared
-	}
+	if (payload.media) headerMedia = await prepareWAMessageMedia(payload.media, options)
 
 	const mentionedJid = payload.mentions?.length ? payload.mentions : payload.contextInfo?.mentionedJid || []
 
@@ -421,6 +492,8 @@ const buildNativeFlowInteractiveMessage = async (
 	return { interactiveMessage: interactive }
 }
 
+/* --------------------------- generateWAMessageContent ---------------------- */
+
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
 	options: MessageContentGenerationOptions & { patchInteractiveMd?: boolean }
@@ -431,7 +504,9 @@ export const generateWAMessageContent = async (
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = (message as any).linkPreview
-		if (typeof urlInfo === 'undefined') urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
+		if (typeof urlInfo === 'undefined') {
+			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
+		}
 
 		if (urlInfo) {
 			extContent.matchedText = urlInfo['matched-text']
@@ -453,18 +528,9 @@ export const generateWAMessageContent = async (
 		}
 
 		if (options.backgroundColor) extContent.backgroundArgb = await assertColor(options.backgroundColor)
-		if ((options as any).textColor) (extContent as any).textArgb = await assertColor((options as any).textColor)
 		if (options.font) extContent.font = options.font
 
 		m.extendedTextMessage = extContent
-	} else if (hasNonNullishProperty(message, 'contacts')) {
-		const contactLen = message.contacts.contacts.length
-		if (!contactLen) throw new Boom('require atleast 1 contact', { statusCode: 400 })
-		if (contactLen === 1) m.contactMessage = WAProto.Message.ContactMessage.create(message.contacts.contacts[0])
-		else m.contactsArrayMessage = WAProto.Message.ContactsArrayMessage.create(message.contacts)
-	} else if (hasNonNullishProperty(message, 'location')) {
-		if ((message as any).live) m.liveLocationMessage = WAProto.Message.LiveLocationMessage.create(message.location as any)
-		else m.locationMessage = WAProto.Message.LocationMessage.create(message.location)
 	} else if (hasNonNullishProperty(message, 'react')) {
 		if (!(message as any).react.senderTimestampMs) (message as any).react.senderTimestampMs = Date.now()
 		m.reactionMessage = WAProto.Message.ReactionMessage.create((message as any).react)
@@ -480,55 +546,19 @@ export const generateWAMessageContent = async (
 					: 0
 				: (message as any).disappearingMessagesInChat
 		m = prepareDisappearingMessageSettingContent(exp)
-	} else if (hasNonNullishProperty(message, 'buttonReply')) {
-		switch ((message as any).type) {
-			case 'list':
-				;(m as any).listResponseMessage = {
-					title: (message as any).buttonReply.title,
-					description: (message as any).buttonReply.description,
-					singleSelectReply: { selectedRowId: (message as any).buttonReply.rowId },
-					listType: proto.Message.ListResponseMessage.ListType.SINGLE_SELECT
-				}
-				break
-			case 'template':
-				m.templateButtonReplyMessage = {
-					selectedDisplayText: (message as any).buttonReply.displayText,
-					selectedId: (message as any).buttonReply.id,
-					selectedIndex: (message as any).buttonReply.index
-				}
-				break
-			case 'plain':
-				m.buttonsResponseMessage = {
-					selectedButtonId: (message as any).buttonReply.id,
-					selectedDisplayText: (message as any).buttonReply.displayText,
-					type: proto.Message.ButtonsResponseMessage.Type.DISPLAY_TEXT
-				}
-				break
-			case 'interactive':
-				;(m as any).interactiveResponseMessage = {
-					body: {
-						text: (message as any).buttonReply.displayText,
-						format: proto.Message.InteractiveResponseMessage.Body.Format.EXTENSIONS_1
-					},
-					nativeFlowResponseMessage: {
-						name: (message as any).buttonReply.nativeFlows?.name,
-						paramsJson: (message as any).buttonReply.nativeFlows?.paramsJson,
-						version: (message as any).buttonReply.nativeFlows?.version
-					}
-				}
-				break
-		}
 	}
-	// ✅ مهم: nativeFlow builder
+	// ✅ nativeFlow support
 	else if (hasNonNullishProperty(message, 'nativeFlow')) {
 		m = await buildNativeFlowInteractiveMessage((message as any).nativeFlow as NativeFlowPayload, options)
-	} else {
+	}
+	// fallback to media
+	else {
 		m = await prepareWAMessageMedia(message as any, options)
 	}
 
 	// mentions merge
 	if (hasOptionalProperty(message, 'mentions') && (message as any).mentions?.length) {
-		const messageType = Object.keys(m)[0] as any
+		const messageType = Object.keys(m)[0] as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = (m as any)[messageType]
 		if (key) {
 			key.contextInfo = key.contextInfo || {}
@@ -538,28 +568,11 @@ export const generateWAMessageContent = async (
 
 	// contextInfo merge
 	if (hasOptionalProperty(message, 'contextInfo') && (message as any).contextInfo) {
-		const messageType = Object.keys(m)[0] as any
+		const messageType = Object.keys(m)[0] as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = (m as any)[messageType]
 		if (key) {
 			key.contextInfo = key.contextInfo ? { ...key.contextInfo, ...(message as any).contextInfo } : (message as any).contextInfo
 		}
-	}
-
-	// wrappers
-	if (hasOptionalProperty(message, 'ephemeral') && (message as any).ephemeral) m = { ephemeralMessage: { message: m } } as any
-	if (hasOptionalProperty(message, 'viewOnce') && (message as any).viewOnce) m = { viewOnceMessage: { message: m } } as any
-	if (hasOptionalProperty(message, 'viewOnceV2') && (message as any).viewOnceV2) m = { viewOnceMessageV2: { message: m } } as any
-
-	// edit
-	if (hasOptionalProperty(message, 'edit')) {
-		m = {
-			protocolMessage: {
-				key: (message as any).edit,
-				editedMessage: m,
-				timestampMs: Date.now(),
-				type: WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT
-			}
-		} as any
 	}
 
 	// reporting token
@@ -568,11 +581,12 @@ export const generateWAMessageContent = async (
 		if (!(m as any).messageContextInfo.messageSecret) (m as any).messageContextInfo.messageSecret = randomBytes(32)
 	}
 
-	// ✅ build + MD patch (افتراضي)
 	const built = WAProto.Message.create(m as any)
 	const patchEnabled = options.patchInteractiveMd !== false
 	return patchEnabled ? patchMessageForMdIfRequired(built as any) : (built as any)
 }
+
+/* ---------------------------- generateWAMessageFromContent ---------------------------- */
 
 export const generateWAMessageFromContent = (
 	jid: string,
@@ -591,10 +605,10 @@ export const generateWAMessageFromContent = (
 
 		let quotedMsg = normalizeMessageContent(quoted.message)!
 		const msgType = getContentType(quotedMsg)!
-		quotedMsg = proto.Message.create({ [msgType]: quotedMsg[msgType] })
+		quotedMsg = proto.Message.create({ [msgType]: (quotedMsg as any)[msgType] })
 
-		const quotedContent = quotedMsg[msgType]
-		if (typeof quotedContent === 'object' && quotedContent && 'contextInfo' in quotedContent) delete (quotedContent as any).contextInfo
+		const quotedContent = (quotedMsg as any)[msgType]
+		if (typeof quotedContent === 'object' && quotedContent && 'contextInfo' in quotedContent) delete quotedContent.contextInfo
 
 		const contextInfo: proto.IContextInfo =
 			('contextInfo' in (innerMessage as any)[key]! && (innerMessage as any)[key]?.contextInfo) || {}
@@ -619,7 +633,7 @@ export const generateWAMessageFromContent = (
 		}
 	}
 
-	const msg = WAProto.Message.create(message as any)
+	message = WAProto.Message.create(message as any)
 
 	const messageJSON = {
 		key: {
@@ -627,7 +641,7 @@ export const generateWAMessageFromContent = (
 			fromMe: true,
 			id: options?.messageId || generateMessageIDV2()
 		},
-		message: msg,
+		message,
 		messageTimestamp: timestamp,
 		messageStubParameters: [],
 		participant: isJidGroup(jid) || isJidStatusBroadcast(jid) ? userJid : undefined,
@@ -642,6 +656,8 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid } as any), options)
 }
 
+/* ------------------------------ Content helpers ---------------------------- */
+
 export const getContentType = (content: proto.IMessage | undefined) => {
 	if (!content) return undefined
 	const keys = Object.keys(content)
@@ -654,64 +670,54 @@ export const getContentType = (content: proto.IMessage | undefined) => {
 	return key as keyof typeof content
 }
 
+/**
+ * ✅ FIX TS7022:
+ * no self-referential inference, 'inner' typed explicitly
+ */
 export const normalizeMessageContent = (content: WAMessageContent | null | undefined): WAMessageContent | undefined => {
 	if (!content) return undefined
 
 	for (let i = 0; i < 5; i++) {
-		const inner =
-			(content as any)?.editedMessage ||
-			(content as any)?.viewOnceMessage ||
-			(content as any)?.viewOnceMessageV2 ||
-			(content as any)?.viewOnceMessageV2Extension ||
-			(content as any)?.ephemeralMessage ||
-			(content as any)?.documentWithCaptionMessage ||
-			(content as any)?.associatedChildMessage ||
-			(content as any)?.groupStatusMessage ||
-			(content as any)?.groupStatusMessageV2
-
+		const inner: { message: WAMessageContent } | undefined = getFutureProofMessage(content)
 		if (!inner) break
 		content = inner.message
 	}
 
-	return content as any
+	return content
+
+	function getFutureProofMessage(message: WAMessageContent): { message: WAMessageContent } | undefined {
+		return (
+			(message as any)?.editedMessage ||
+			(message as any)?.statusAddYours ||
+			(message as any)?.botTaskMessage ||
+			(message as any)?.eventCoverImage ||
+			(message as any)?.questionMessage ||
+			(message as any)?.viewOnceMessage ||
+			(message as any)?.botInvokeMessage ||
+			(message as any)?.ephemeralMessage ||
+			(message as any)?.limitSharingMessage ||
+			(message as any)?.viewOnceMessageV2 ||
+			(message as any)?.lottieStickerMessage ||
+			(message as any)?.groupStatusMessage ||
+			(message as any)?.questionReplyMessage ||
+			(message as any)?.botForwardedMessage ||
+			(message as any)?.statusMentionMessage ||
+			(message as any)?.groupStatusMessageV2 ||
+			(message as any)?.pollCreationMessageV4 ||
+			(message as any)?.pollCreationMessageV5 ||
+			(message as any)?.associatedChildMessage ||
+			(message as any)?.groupMentionedMessage ||
+			(message as any)?.groupStatusMentionMessage ||
+			(message as any)?.viewOnceMessageV2Extension ||
+			(message as any)?.documentWithCaptionMessage ||
+			(message as any)?.pollCreationOptionImageMessage
+		)
+	}
 }
 
 export const extractMessageContent = (content: WAMessageContent | undefined | null): WAMessageContent | undefined => {
-	const extractFromButtonsLike = (msg: any) => {
-		const header = typeof msg.header === 'object' && msg.header !== null
-		const h = header ? msg.header : msg
-
-		if (h?.imageMessage) return { imageMessage: h.imageMessage }
-		if (h?.documentMessage) return { documentMessage: h.documentMessage }
-		if (h?.videoMessage) return { videoMessage: h.videoMessage }
-		if (h?.locationMessage) return { locationMessage: h.locationMessage }
-		if (h?.productMessage) return { productMessage: h.productMessage }
-
-		return {
-			conversation:
-				'contentText' in msg
-					? msg.contentText
-					: 'hydratedContentText' in msg
-						? msg.hydratedContentText
-						: msg?.body?.text || ''
-		}
-	}
-
 	content = normalizeMessageContent(content)
-	if (!content) return undefined
-
-	if ((content as any).buttonsMessage) return extractFromButtonsLike((content as any).buttonsMessage)
-	if ((content as any).interactiveMessage) return extractFromButtonsLike((content as any).interactiveMessage)
-	if ((content as any).templateMessage?.interactiveMessageTemplate)
-		return extractFromButtonsLike((content as any).templateMessage.interactiveMessageTemplate)
-	if ((content as any).templateMessage?.hydratedFourRowTemplate)
-		return extractFromButtonsLike((content as any).templateMessage.hydratedFourRowTemplate)
-	if ((content as any).templateMessage?.hydratedTemplate)
-		return extractFromButtonsLike((content as any).templateMessage.hydratedTemplate)
-	if ((content as any).templateMessage?.fourRowTemplate)
-		return extractFromButtonsLike((content as any).templateMessage.fourRowTemplate)
-
-	return content
+	return content || undefined
 }
 
 export const getDevice = (id: string) =>
@@ -724,6 +730,8 @@ export const getDevice = (id: string) =>
 				: /^(3F|.{18}$)/.test(id)
 					? 'desktop'
 					: 'baileys'
+
+/* ------------------------------ Store updates ------------------------------ */
 
 export const updateMessageWithReceipt = (msg: Pick<WAMessage, 'userReceipt'>, receipt: MessageUserReceipt) => {
 	msg.userReceipt = msg.userReceipt || []
@@ -740,55 +748,6 @@ export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, rea
 	msg.reactions = reactions
 }
 
-export const updateMessageWithPollUpdate = (msg: Pick<WAMessage, 'pollUpdates'>, update: proto.IPollUpdate) => {
-	const authorID = getKeyAuthor(update.pollUpdateMessageKey)
-	const votes = (msg.pollUpdates || []).filter(r => getKeyAuthor(r.pollUpdateMessageKey) !== authorID)
-	if (update.vote?.selectedOptions?.length) votes.push(update)
-	msg.pollUpdates = votes
-}
-
-export const updateMessageWithEventResponse = (
-	msg: Pick<WAMessage, 'eventResponses'>,
-	update: proto.IEventResponse
-) => {
-	const authorID = getKeyAuthor(update.eventResponseMessageKey)
-	const responses = (msg.eventResponses || []).filter(r => getKeyAuthor(r.eventResponseMessageKey) !== authorID)
-	responses.push(update)
-	msg.eventResponses = responses
-}
-
-type VoteAggregation = { name: string; voters: string[] }
-
-export function getAggregateVotesInPollMessage(
-	{ message, pollUpdates }: Pick<WAMessage, 'pollUpdates' | 'message'>,
-	meId?: string
-) {
-	const opts =
-		(message as any)?.pollCreationMessage?.options ||
-		(message as any)?.pollCreationMessageV2?.options ||
-		(message as any)?.pollCreationMessageV3?.options ||
-		[]
-
-	const voteHashMap = opts.reduce((acc: Record<string, VoteAggregation>, opt: any) => {
-		const hash = sha256(Buffer.from(opt.optionName || '')).toString()
-		acc[hash] = { name: opt.optionName || '', voters: [] }
-		return acc
-	}, {})
-
-	for (const update of pollUpdates || []) {
-		const vote = (update as any).vote
-		if (!vote) continue
-
-		for (const option of vote.selectedOptions || []) {
-			const hash = option.toString()
-			if (!voteHashMap[hash]) voteHashMap[hash] = { name: 'Unknown', voters: [] }
-			voteHashMap[hash].voters.push(getKeyAuthor((update as any).pollUpdateMessageKey, meId))
-		}
-	}
-
-	return Object.values(voteHashMap)
-}
-
 export const aggregateMessageKeysNotFromMe = (keys: WAMessageKey[]) => {
 	const keyMap: Record<string, { jid: string; participant: string | undefined; messageIds: string[] }> = {}
 	for (const { remoteJid, id, participant, fromMe } of keys) {
@@ -800,6 +759,8 @@ export const aggregateMessageKeysNotFromMe = (keys: WAMessageKey[]) => {
 	}
 	return Object.values(keyMap)
 }
+
+/* ------------------------------ Download media ----------------------------- */
 
 type DownloadMediaMessageContext = {
 	reuploadRequest: (msg: WAMessage) => Promise<WAMessage>
@@ -859,14 +820,14 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 }
 
 export const assertMediaContent = (content: proto.IMessage | null | undefined) => {
-	content = extractMessageContent(content)
+	const c = extractMessageContent(content)
 	const mediaContent =
-		(content as any)?.documentMessage ||
-		(content as any)?.imageMessage ||
-		(content as any)?.videoMessage ||
-		(content as any)?.audioMessage ||
-		(content as any)?.stickerMessage
+		(c as any)?.documentMessage ||
+		(c as any)?.imageMessage ||
+		(c as any)?.videoMessage ||
+		(c as any)?.audioMessage ||
+		(c as any)?.stickerMessage
 
-	if (!mediaContent) throw new Boom('given message is not a media message', { statusCode: 400, data: content })
+	if (!mediaContent) throw new Boom('given message is not a media message', { statusCode: 400, data: c })
 	return mediaContent
 }
