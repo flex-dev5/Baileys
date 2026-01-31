@@ -186,10 +186,10 @@ export const makeSocket = (config: SocketConfig) => {
 		 * WhatsApp مش دايمًا بيرد (خصوصًا passive IQ)
 		 * Timeout = حالة طبيعية، مش Error قاتل
 		 */
-		if (error instanceof Boom && error.output?.statusCode === 408) {
-			logger?.warn?.({ msgId }, 'Query timed out (ignored)')
-			return undefined
-		}
+if (error instanceof Boom && error.output?.statusCode === 408) {
+	logger?.warn?.({ msgId }, 'timed out waiting for message')
+	return undefined
+}
 
 		throw error
 	} finally {
@@ -223,14 +223,17 @@ const query = async (node: BinaryNode, timeoutMs?: number) => {
 
 	// لو مفيش رد → اعتبره OK
 	if (!result) {
-		return undefined
-	}
+	return undefined
+}
 
-	if (result && 'tag' in result) {
-		assertNodeErrorFree(result)
-	}
+if ('tag' in result) {
+	assertNodeErrorFree(result)
+}
 
-	return result
+return result
+
+
+
 }
 
 	// Validate current key-bundle on server; on failure, trigger pre-key upload and rethrow
@@ -739,9 +742,10 @@ const sendPassiveIq = async (tag: 'passive' | 'active') => {
 			content: [{ tag, attrs: {} }]
 		})
 	} catch (err) {
-		logger?.debug?.({ err }, 'sendPassiveIq failed (ignored)')
+		logger?.debug?.({ err }, 'sendPassiveIq ignored error')
 	}
 }
+
 
 	const requestPairingCode = async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
 		const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
