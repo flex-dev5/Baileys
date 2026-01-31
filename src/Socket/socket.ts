@@ -157,68 +157,84 @@ export const makeSocket = (config: SocketConfig) => {
 	 * @param timeoutMs timeout after which the promise will reject
 	 */
 	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
-		let onRecv: ((data: T) => void) | undefined
-		let onErr: ((err: Error) => void) | undefined
-		try {
-			const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
-				onRecv = data => {
-					resolve(data)
-				}
+	let onRecv: ((data: T) => void) | undefined
+	let onErr: ((err: Error) => void) | undefined
 
-				onErr = err => {
-					reject(
-						err ||
-							new Boom('Connection Closed', {
-								statusCode: DisconnectReason.connectionClosed
-							})
-					)
-				}
+	try {
+		const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
+			onRecv = data => resolve(data)
 
-				ws.on(`TAG:${msgId}`, onRecv)
-				ws.on('close', onErr)
-				ws.on('error', onErr)
+			onErr = err =>
+				reject(
+					err ||
+						new Boom('Connection Closed', {
+							statusCode: DisconnectReason.connectionClosed
+						})
+				)
 
-				return () => reject(new Boom('Query Cancelled'))
-			})
-			return result
-		} catch (error) {
-			// Catch timeout and return undefined instead of throwing
-			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
-				logger?.warn?.({ msgId }, 'timed out waiting for message')
-				return undefined
-			}
+			ws.on(`TAG:${msgId}`, onRecv)
+			ws.on('close', onErr)
+			ws.on('error', onErr)
 
-			throw error
-		} finally {
-			if (onRecv) ws.off(`TAG:${msgId}`, onRecv)
-			if (onErr) {
-				ws.off('close', onErr)
-				ws.off('error', onErr)
-			}
-		}
-	}
-
-	/** send a query, and wait for its response. auto-generates message ID if not provided */
-	const query = async (node: BinaryNode, timeoutMs?: number) => {
-		if (!node.attrs.id) {
-			node.attrs.id = generateMessageTag()
-		}
-
-		const msgId = node.attrs.id
-
-		const result = await promiseTimeout<any>(timeoutMs, async (resolve, reject) => {
-			const result = waitForMessage(msgId, timeoutMs).catch(reject)
-			sendNode(node)
-				.then(async () => resolve(await result))
-				.catch(reject)
+			return () => reject(new Boom('Query Cancelled'))
 		})
 
-		if (result && 'tag' in result) {
-			assertNodeErrorFree(result)
-		}
-
 		return result
+	} catch (error: any) {
+		/**
+		 * 🔥 FIX:
+		 * WhatsApp مش دايمًا بيرد (خصوصًا passive IQ)
+		 * Timeout = حالة طبيعية، مش Error قاتل
+		 */
+if (error instanceof Boom && error.output?.statusCode === 408) {
+	logger?.warn?.({ msgId }, 'timed out waiting for message')
+	return undefined
+}
+
+		throw error
+	} finally {
+		if (onRecv) ws.off(`TAG:${msgId}`, onRecv)
+		if (onErr) {
+			ws.off('close', onErr)
+			ws.off('error', onErr)
+		}
 	}
+}
+
+
+	/** send a query, and wait for its response. auto-generates message ID if not provided */
+const query = async (node: BinaryNode, timeoutMs?: number) => {
+	if (!node.attrs.id) {
+		node.attrs.id = generateMessageTag()
+	}
+
+	const msgId = node.attrs.id
+
+	const result = await promiseTimeout<any>(timeoutMs ?? defaultQueryTimeoutMs, async (resolve, reject) => {
+		const wait = waitForMessage(msgId, timeoutMs).catch(reject)
+
+		try {
+			await sendNode(node)
+			resolve(await wait)
+		} catch (err) {
+			reject(err)
+		}
+	})
+
+	// لو مفيش رد → اعتبره OK
+	if (!result) {
+	return undefined
+}
+
+if ('tag' in result) {
+	assertNodeErrorFree(result)
+}
+
+return result
+
+
+
+}
 
 	// Validate current key-bundle on server; on failure, trigger pre-key upload and rethrow
 	const digestKeyBundle = async (): Promise<void> => {
@@ -707,43 +723,29 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 		}, keepAliveIntervalMs))
 	/** i have no idea why this exists. pls enlighten me */
-	const sendPassiveIq = (tag: 'passive' | 'active') =>
-		query({
+/**
+ * 🔥 FIX:
+ * passive / active IQ
+ * WhatsApp غير ملزم يرد عليهم
+ * Fire-and-forget
+ */
+const sendPassiveIq = async (tag: 'passive' | 'active') => {
+	try {
+		await sendNode({
 			tag: 'iq',
 			attrs: {
 				to: S_WHATSAPP_NET,
+				type: 'set',
 				xmlns: 'passive',
-				type: 'set'
+				id: generateMessageTag()
 			},
 			content: [{ tag, attrs: {} }]
 		})
-
-	/** logout & invalidate connection */
-	const logout = async (msg?: string) => {
-		const jid = authState.creds.me?.id
-		if (jid) {
-			await sendNode({
-				tag: 'iq',
-				attrs: {
-					to: S_WHATSAPP_NET,
-					type: 'set',
-					id: generateMessageTag(),
-					xmlns: 'md'
-				},
-				content: [
-					{
-						tag: 'remove-companion-device',
-						attrs: {
-							jid,
-							reason: 'user_initiated'
-						}
-					}
-				]
-			})
-		}
-
-		void end(new Boom(msg || 'Intentional Logout', { statusCode: DisconnectReason.loggedOut }))
+	} catch (err) {
+		logger?.debug?.({ err }, 'sendPassiveIq ignored error')
 	}
+}
+
 
 	const requestPairingCode = async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
 		const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
