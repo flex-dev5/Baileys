@@ -104,6 +104,7 @@ import makeWASocket from '@whiskeysockets/baileys'
         - [Reaction Message](#reaction-message)
         - [Pin Message](#pin-message)
         - [Poll Message](#poll-message)
+        - [Interactive (Native Flow) Message](#interactive-native-flow-message)
     - [Sending with Link Preview](#sending-messages-with-link-previews)
     - [Media Messages](#media-messages)
         - [Gif Message](#gif-message)
@@ -587,6 +588,54 @@ await sock.sendMessage(
         }
     }
 )
+```
+
+#### Interactive (Native Flow) Message
+```ts
+const buttons = [
+    {
+        name: 'single_select',
+        buttonParamsJson: JSON.stringify({
+            title: 'RAMADAN LIST',
+            sections: [
+                {
+                    title: 'Hello to ramadan bot world',
+                    highlight_label: 'Take Ur Time😊',
+                    rows: [
+                        {
+                            header: 'القسم الاول',
+                            title: '『⛩️┃اسـ❄️ـتدعاء قـسـ📿ـم الدي🕌ـن┃⛩️』',
+                            description: '『⛩️┃هنا حيث يوجد الكثير من الحسانات و الاذكار و القرأن و ما هو يساعد في الطريق الى الجنة 🕋┃⛩️』',
+                            id: '.م1'
+                        }
+                    ]
+                }
+            ]
+        })
+    },
+    {
+        name: 'quick_reply',
+        buttonParamsJson: JSON.stringify({
+            display_text: 'SOON',
+            id: ''
+        })
+    },
+    {
+        name: 'cta_url',
+        buttonParamsJson: JSON.stringify({
+            display_text: 'SOON',
+            url: 'https://wa.me/201151094460',
+            merchant_url: 'https://wa.me/201151094460'
+        })
+    }
+]
+
+await sock.sendMessage(jid, {
+    title: 'RAMADAN-BOT🤖',
+    text: '*Hello to Ramadan-Bot😊*',
+    image: { url: 'https://i.postimg.cc/hj2Jy9Wc/Ramadan-Kareem-under-a-starry-sky.png' },
+    nativeFlowMessage: { buttons }
+})
 ```
 
 ### Sending Messages with Link Previews
